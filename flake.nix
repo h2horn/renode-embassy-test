@@ -10,7 +10,12 @@
   outputs = { self, nixpkgs, utils, rust-overlay, ... }:
     utils.lib.eachDefaultSystem (system:
       let
-        overlays = [ (import rust-overlay) ];
+        overlays = [
+          (import rust-overlay)
+          (self: super: {
+            renode = super.callPackage ./renode.nix {};
+          })
+        ];
         pkgs = import nixpkgs {
           inherit system overlays;
         };
@@ -28,6 +33,7 @@
               rust-toolchain
               #rust-bin.nightly.latest.default #.rust-analysis
               #pkgs.rust-bin.${rustChannel}.${rustVersion}.rls
+              renode
             ];
         };
       }
