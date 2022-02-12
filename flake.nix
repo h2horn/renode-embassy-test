@@ -5,9 +5,10 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     utils.url = "github:numtide/flake-utils";
     rust-overlay.url = "github:oxalica/rust-overlay";
+    mach-nix.url = "mach-nix/3.4.0";
   };
 
-  outputs = { self, nixpkgs, utils, rust-overlay, ... }:
+  outputs = { self, nixpkgs, utils, rust-overlay, mach-nix, ... }:
     utils.lib.eachDefaultSystem (system:
       let
         overlays = [
@@ -22,8 +23,19 @@
         rust-toolchain = pkgs.rust-bin.selectLatestNightlyWith
           (toolchain: toolchain.default.override {
             extensions = [ "rust-src" ];
-            targets = [ "thumbv7em-none-eabihf" ];
+            targets = [ "thumbv7em-none-eabihf" "thumbv7em-none-eabi" ];
           });
+        renode-python = mach-nix.lib.${system}.mkPython {
+          requirements = builtins.readFile "${pkgs.renode}/opt/renode/tests/requirements.txt";
+        };
+        renode-test-script = pkgs.writeScriptBin "run-tests" ''
+          python -u ${pkgs.renode}/opt/renode/tests/run_tests.py \
+            --robot-framework-remote-server-full-directory=${pkgs.renode}/bin \
+            --robot-framework-remote-server-name=renode \
+            --css-file=${pkgs.renode}/opt/renode/tests/robot.css \
+            --runner=none \
+            -r test-results $@
+        '';
       in
       {
         # `nix develop`
@@ -31,10 +43,12 @@
           buildInputs = with pkgs;
             [
               rust-toolchain
-              #rust-bin.nightly.latest.default #.rust-analysis
-              #pkgs.rust-bin.${rustChannel}.${rustVersion}.rls
               renode
+              gcc-arm-embedded # gdb
+              renode-python
+              renode-test-script
             ];
+            RENODE_PATH = "${pkgs.renode}/opt/renode/";
         };
       }
     );

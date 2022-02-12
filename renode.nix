@@ -1,20 +1,10 @@
 { stdenv, fetchurl
 , glib, mono, gtk2, gtk-sharp-2_0, gtk_engines
-, python3
 , makeWrapper, lib}:
 
 let
   version = "1.12.0";
-  pkgrel = "1";
-
-  # sett tests/requirements.txt
-  renode-python = python3.withPackages (p: with p; [
-    robotframework
-    netifaces
-    requests
-    psutil
-    pyyaml
-  ]);
+  pkgrel = "+20220210git9a1564e8-1";
 in
 
 stdenv.mkDerivation {
@@ -22,12 +12,11 @@ stdenv.mkDerivation {
   inherit version;
 
   src = fetchurl {
-    url = "https://github.com/renode/renode/releases/download/v${version}/renode-${version}-${pkgrel}-x86_64.pkg.tar.xz";
-    sha256 = "U8eonP63CB3165K6/fMY/cioDOO6jW0IkIW8kYwVRF0=";
+    url = "https://dl.antmicro.com/projects/renode/builds/renode-${version}${pkgrel}-x86_64.pkg.tar.xz";
+    sha256 = "JXooj1FSQqJZ0bMsQLPp2GJwII5H+FGag1EpYMViQVc=";
   };
 
   nativeBuildInputs = [ makeWrapper ];
-  propagatedBuildInputs = [ renode-python ];
 
   sourceRoot = ".";
 
