@@ -28,11 +28,12 @@
         renode-python = mach-nix.lib.${system}.mkPython {
           requirements = builtins.readFile "${pkgs.renode}/opt/renode/tests/requirements.txt";
         };
-        renode-test-script = pkgs.writeScriptBin "run-tests" ''
+        renode-test-script = pkgs.writeScriptBin "renode-test" ''
           python -u ${pkgs.renode}/opt/renode/tests/run_tests.py \
             --robot-framework-remote-server-full-directory=${pkgs.renode}/bin \
             --robot-framework-remote-server-name=renode \
             --css-file=${pkgs.renode}/opt/renode/tests/robot.css \
+            --variable PWD_PATH:"$PWD" \
             --runner=none \
             -r test-results $@
         '';

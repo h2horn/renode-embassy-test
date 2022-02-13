@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
-#![macro_use]
 
 use defmt_rtt as _; // global logger
 use panic_probe as _;
@@ -10,28 +9,33 @@ pub use defmt::*;
 
 use arrayvec::ArrayString;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use embassy::blocking_mutex::kind::Noop;
+use embassy::blocking_mutex::raw::NoopRawMutex;
 use embassy::channel::mpsc::{self, Channel, Sender, Receiver};
 use embassy::executor::Spawner;
 use embassy::util::Forever;
-use embassy_nrf::gpio::{NoPin, Input, Output, Pull, Level, OutputDrive};
+use embassy_nrf::gpio::{Input, Output, Pull, Level, OutputDrive};
 use embassy_nrf::peripherals::{UARTE0, P0_06, P1_06};
 use embassy_nrf::uarte::UarteRx;
 use embassy_nrf::{interrupt, uarte, Peripherals};
 use core::fmt::Write;
 
+#[derive(Debug)]
 enum LedState {
     On,
     Off,
 }
 
-static LED_QUEUE: Forever<Channel<Noop, LedState, 1>> = Forever::new();
-static UART_QUEUE: Forever<Channel<Noop, ArrayString<32>, 8>> = Forever::new();
+static LED_QUEUE: Forever<Channel<NoopRawMutex, LedState, 8>> = Forever::new();
+static UART_QUEUE: Forever<Channel<NoopRawMutex, ArrayString<32>, 8>> = Forever::new();
 
 #[embassy::main]
 async fn main(spawner: Spawner, p: Peripherals) {
+    let mut config = uarte::Config::default();
+    config.parity = uarte::Parity::EXCLUDED;
+    config.baudrate = uarte::Baudrate::BAUD115200;
+
     let irq = interrupt::take!(UARTE0_UART0);
-    let uart = uarte::Uarte::new(p.UARTE0, irq, p.P0_08, p.P0_12, NoPin, NoPin, uarte::Config::default());
+    let uart = uarte::Uarte::new(p.UARTE0, irq, p.P0_08, p.P0_12, config);
     let (mut tx, rx) = uart.split();
 
     let c = UART_QUEUE.put(Channel::new());
@@ -45,23 +49,13 @@ async fn main(spawner: Spawner, p: Peripherals) {
 
     s.send(ArrayString::from("Hello World!\n").unwrap()).await.unwrap();
 
-    //outb.set_high();
-    //button.wait_for_low().await;
-    s.send(ArrayString::from("Low!\n").unwrap()).await.unwrap();
+    spawner.spawn(led_task(led, receiver, s.clone())).unwrap();
+    spawner.spawn(button_task(button, sender.clone(), s.clone())).unwrap();
+    spawner.spawn(reader(rx, sender, s)).unwrap();
 
-    // Spawn a task responsible purely for reading
-
-    spawner.spawn(led_task(led, receiver)).unwrap();
-    spawner.spawn(button_task(button, sender, s.clone())).unwrap();
-    spawner.spawn(reader(rx, s)).unwrap();
-
-    // Continue reading in this main task and write
-    // back out the buffer we receive from the read
-    // task.
     loop {
         if let Some(buf) = r.recv().await {
-            info!("writing...");
-            unwrap!(tx.write(buf.as_bytes()).await);
+            let _ = tx.write(buf.as_bytes()).await;
         }
     }
 }
@@ -69,21 +63,28 @@ async fn main(spawner: Spawner, p: Peripherals) {
 #[embassy::task]
 async fn led_task(
     mut led: Output<'static, P0_06>,
-    mut receiver: Receiver<'static, Noop, LedState, 1>,
+    mut receiver: Receiver<'static, NoopRawMutex, LedState, 8>,
+    tx: Sender<'static, NoopRawMutex, ArrayString<32>, 8>,
 ) {
+    let mut string : ArrayString<32> = ArrayString::new();
     loop {
-        match receiver.recv().await.unwrap() {
-            LedState::On => led.set_high(),
-            LedState::Off => led.set_low(),
-        };
+        if let Some(state) = receiver.recv().await {
+            match state {
+                LedState::On => led.set_high(),
+                LedState::Off => led.set_low(),
+            }
+            core::writeln!(string, "LED: {:?}", state).ok();
+            let _ = tx.send(string).await;
+            string.clear();
+        }
     }
 }
 
 #[embassy::task]
 async fn button_task(
     mut button: Input<'static, P1_06>,
-    sender: Sender<'static, Noop, LedState, 1>,
-    tx: Sender<'static, Noop, ArrayString<32>, 8>,
+    sender: Sender<'static, NoopRawMutex, LedState, 8>,
+    tx: Sender<'static, NoopRawMutex, ArrayString<32>, 8>,
 ) {
     let mut trigger_count = 0;
     let mut string : ArrayString<32> = ArrayString::new();
@@ -105,12 +106,25 @@ async fn button_task(
 }
 
 #[embassy::task]
-async fn reader(mut rx: UarteRx<'static, UARTE0>, s: Sender<'static, Noop, ArrayString<32>, 8>) {
-    let mut buf = [0; 32];
+async fn reader(
+    mut rx: UarteRx<'static, UARTE0>,
+    sender: Sender<'static, NoopRawMutex, LedState, 8>,
+    tx: Sender<'static, NoopRawMutex, ArrayString<32>, 8>
+) {
+    let mut buf = [0; 1];
+    let mut string = ArrayString::<32>::new();
     loop {
-        info!("reading...");
         unwrap!(rx.read(&mut buf).await);
-        unwrap!(s.send(ArrayString::from_byte_string(&buf).unwrap()).await);
+        match buf[0] {
+            b'0' => unwrap!(sender.send(LedState::Off).await),
+            b'1' => unwrap!(sender.send(LedState::On).await),
+            b'\n' => { unwrap!(tx.send(string).await); string.clear(); },
+            c => string.push(c as char),
+        }
+        if string.is_full() {
+            unwrap!(tx.send(string).await);
+            string.clear();
+        }
     }
 }
 

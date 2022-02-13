@@ -3,6 +3,9 @@ edition = "2021"
 name = "frenode"
 version = "0.1.0"
 
+[features]
+default = ["nightly"]
+nightly = ["embassy-nrf/nightly"]
 
 [dependencies]
 embassy = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy", features = ["defmt"] }
@@ -14,11 +17,5 @@ defmt-rtt = "0.3"
 cortex-m = "0.7.3"
 cortex-m-rt = "0.7.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
-futures = { version = "0.3.17", default-features = false, features = ["async-await"] }
-rand = { version = "0.8.4", default-features = false }
-embedded-storage = "0.3.0"
-
-usb-device = "0.2"
-usbd-serial = "0.1.1"
 
 arrayvec = { version = "0.7.2", default-features = false }

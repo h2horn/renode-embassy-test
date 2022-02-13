@@ -3,12 +3,17 @@
 
 using sysbus
 
+#emulation CreateUartPtyTerminal "term" "/tmp/uart"
+
 mach create
 machine LoadPlatformDescription @nrf52840-dongle.repl
 
 $bin?=@../firmware/target/thumbv7em-none-eabi/debug/frenode
 
+machine StartGdbServer 3333
+
 showAnalyzer uart0
+#connector Connect sysbus.uart0 term
 
 macro reset
 """
