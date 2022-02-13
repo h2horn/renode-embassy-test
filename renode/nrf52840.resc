@@ -1,0 +1,17 @@
+:name: NRF52840
+:description: Embessy example
+
+using sysbus
+
+mach create
+machine LoadPlatformDescription @nrf52840-dongle.repl
+
+$bin?=@../firmware/target/thumbv7em-none-eabi/debug/frenode
+
+showAnalyzer uart0
+
+macro reset
+"""
+    sysbus LoadELF $bin
+"""
+runMacro $reset

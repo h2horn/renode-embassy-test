@@ -1,10 +1,6 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-run --chip STM32F401CCU6"
-
-rustflags = [
-  "-C", "link-arg=--nmagic",
-  "-C", "link-arg=-Tlink.x",
-]
+# replace nRF82840_xxAA with your chip as listed in `probe-run --list-chips`
+runner = "probe-run --chip nRF52840_xxAA"
 
 [build]
-target = "thumbv7em-none-eabihf"
+target = "thumbv7em-none-eabi"

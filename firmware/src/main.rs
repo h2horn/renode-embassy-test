@@ -1,144 +1,123 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
+#![macro_use]
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use defmt_rtt as _; // global logger
+use panic_probe as _;
+
+pub use defmt::*;
 
 use arrayvec::ArrayString;
-use embassy::blocking_mutex::kind::{Noop};
-use embassy::channel::mpsc::{self, Channel, Receiver, Sender};
+use core::sync::atomic::{AtomicUsize, Ordering};
+use embassy::blocking_mutex::kind::Noop;
+use embassy::channel::mpsc::{self, Channel, Sender, Receiver};
 use embassy::executor::Spawner;
-use embassy::time::{Duration, Timer};
 use embassy::util::Forever;
-use embassy_stm32::exti::ExtiInput;
-use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
-use embassy_stm32::peripherals::{DMA1_CH3, PB0, PC13, USART3};
-use embassy_stm32::time::Hertz;
-use embassy_stm32::usart::{self, Uart};
-use embassy_stm32::Config;
-use embassy_stm32::Peripherals;
+use embassy_nrf::gpio::{NoPin, Input, Output, Pull, Level, OutputDrive};
+use embassy_nrf::peripherals::{UARTE0, P0_06, P1_06};
+use embassy_nrf::uarte::UarteRx;
+use embassy_nrf::{interrupt, uarte, Peripherals};
+use core::fmt::Write;
 
-fn config() -> Config {
-    let mut config = Config::default();
-
-    config.rcc.hse = Some(Hertz(8_000_000));
-    config.rcc.bypass_hse = false;
-    config.rcc.pll48 = false;
-    config.rcc.sys_ck = Some(Hertz(180_000_000));
-    config.rcc.hclk = Some(Hertz(180_000_000));
-    config.rcc.pclk1 = Some(Hertz(45_000_000));
-    config.rcc.pclk2 = Some(Hertz(90_000_000));
-
-    config
+enum LedState {
+    On,
+    Off,
 }
 
-#[embassy::main(config = "config()")]
-async fn main(spawner: Spawner, p: Peripherals) -> ! {
-    static BUTTON_PRESSED: AtomicBool = AtomicBool::new(false);
-    static UART_QUEUE: Forever<Channel<Noop, ArrayString<32>, 8>> = Forever::new();
+static LED_QUEUE: Forever<Channel<Noop, LedState, 1>> = Forever::new();
+static UART_QUEUE: Forever<Channel<Noop, ArrayString<32>, 8>> = Forever::new();
 
-    let led1 = Output::new(p.PB0, Level::Low, Speed::VeryHigh);
-    let button = Input::new(p.PC13, Pull::None);
-    let button = ExtiInput::new(button, p.EXTI13);
-    let usart = Uart::new(
-        p.USART3,
-        p.PD9,
-        p.PD8,
-        p.DMA1_CH3,
-        embassy_stm32::dma::NoDma,
-        usart::Config::default(),
-    );
+#[embassy::main]
+async fn main(spawner: Spawner, p: Peripherals) {
+    let irq = interrupt::take!(UARTE0_UART0);
+    let uart = uarte::Uarte::new(p.UARTE0, irq, p.P0_08, p.P0_12, NoPin, NoPin, uarte::Config::default());
+    let (mut tx, rx) = uart.split();
 
-    let uart_queue = UART_QUEUE.put(Channel::new());
-    let (sender, receiver) = mpsc::split(uart_queue);
+    let c = UART_QUEUE.put(Channel::new());
+    let (s, mut r) = mpsc::split(c);
 
-    spawner.spawn(blink_led(led1, &BUTTON_PRESSED)).unwrap();
-    spawner.spawn(uart_writer(usart, receiver)).unwrap();
-    spawner
-    .spawn(button_waiter(
-        button,
-        &BUTTON_PRESSED,
-        sender,
-    ))
-    .unwrap();
+    let led_queue = LED_QUEUE.put(Channel::new());
+    let (sender, receiver) = mpsc::split(led_queue);
 
+    let button = Input::new(p.P1_06, Pull::Up);
+    let led = Output::new(p.P0_06, Level::Low, OutputDrive::Standard);
 
-    // Main is done, run this future that never finishes
-    let () = core::future::pending().await;
-}
+    s.send(ArrayString::from("Hello World!\n").unwrap()).await.unwrap();
 
-#[embassy::task]
-async fn blink_led(mut led: Output<'static, PB0>, button_high: &'static AtomicBool) {
+    //outb.set_high();
+    //button.wait_for_low().await;
+    s.send(ArrayString::from("Low!\n").unwrap()).await.unwrap();
+
+    // Spawn a task responsible purely for reading
+
+    spawner.spawn(led_task(led, receiver)).unwrap();
+    spawner.spawn(button_task(button, sender, s.clone())).unwrap();
+    spawner.spawn(reader(rx, s)).unwrap();
+
+    // Continue reading in this main task and write
+    // back out the buffer we receive from the read
+    // task.
     loop {
-        Timer::after(Duration::from_millis(100)).await;
-        if !button_high.load(Ordering::SeqCst) {
-            led.set_high();
+        if let Some(buf) = r.recv().await {
+            info!("writing...");
+            unwrap!(tx.write(buf.as_bytes()).await);
         }
-        Timer::after(Duration::from_millis(100)).await;
-        led.set_low();
     }
 }
 
 #[embassy::task]
-async fn button_waiter(
-    mut button: ExtiInput<'static, PC13>,
-    button_pressed: &'static AtomicBool,
-    sender: Sender<'static, Noop, ArrayString<32>, 8>,
+async fn led_task(
+    mut led: Output<'static, P0_06>,
+    mut receiver: Receiver<'static, Noop, LedState, 1>,
+) {
+    loop {
+        match receiver.recv().await.unwrap() {
+            LedState::On => led.set_high(),
+            LedState::Off => led.set_low(),
+        };
+    }
+}
+
+#[embassy::task]
+async fn button_task(
+    mut button: Input<'static, P1_06>,
+    sender: Sender<'static, Noop, LedState, 1>,
+    tx: Sender<'static, Noop, ArrayString<32>, 8>,
 ) {
     let mut trigger_count = 0;
-
-    fn format_message(trigger_count: i32, button_pressed: bool) -> ArrayString<32> {
-        use core::fmt::Write;
-
-        let mut string = ArrayString::new();
-        core::writeln!(
-            string,
-            "Button is {} ({})",
-            button_pressed as i32,
-            trigger_count,
-        )
-        .unwrap();
-        string
-    }
+    let mut string : ArrayString<32> = ArrayString::new();
 
     loop {
-        button.wait_for_rising_edge().await;
+        button.wait_for_low().await;
 
         trigger_count += 1;
-        button_pressed.store(true, Ordering::SeqCst);
-        if sender.send(format_message(trigger_count, true)).await.is_err() {
-            panic!("SendError");
-        }
+        let _ = sender.send(LedState::On).await;
+        core::writeln!(string, "Button pressed: {}", trigger_count).unwrap();
+        let _ = tx.send(string).await;
 
-        button.wait_for_falling_edge().await;
+        button.wait_for_high().await;
 
-        trigger_count += 1;
-        button_pressed.store(false, Ordering::SeqCst);
-        if sender.send(format_message(trigger_count, false)).await.is_err() {
-            panic!("SendError");
-        }
+        let _ = sender.send(LedState::Off).await;
+        core::writeln!(string, "Button released: {}", trigger_count).unwrap();
+        let _ = tx.send(string).await;
     }
 }
 
 #[embassy::task]
-async fn uart_writer(
-    mut usart: Uart<'static, USART3, DMA1_CH3>,
-    mut receiver: Receiver<'static, Noop, ArrayString<32>, 8>,
-) {
+async fn reader(mut rx: UarteRx<'static, UARTE0>, s: Sender<'static, Noop, ArrayString<32>, 8>) {
+    let mut buf = [0; 32];
     loop {
-        let message = receiver.recv().await.unwrap();
-        usart.write(message.as_bytes()).await.unwrap();
+        info!("reading...");
+        unwrap!(rx.read(&mut buf).await);
+        unwrap!(s.send(ArrayString::from_byte_string(&buf).unwrap()).await);
     }
 }
 
-#[cortex_m_rt::exception]
-unsafe fn HardFault(_frame: &cortex_m_rt::ExceptionFrame) -> ! {
-    panic!("hardfault");
-}
-
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {
-        cortex_m::asm::bkpt();
+defmt::timestamp! {"{=u64}", {
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNT.load(Ordering::Relaxed);
+        COUNT.store(n + 1, Ordering::Relaxed);
+        n as u64
     }
 }
