@@ -33,7 +33,6 @@
             --robot-framework-remote-server-full-directory=${pkgs.renode}/bin \
             --robot-framework-remote-server-name=renode \
             --css-file=${pkgs.renode}/opt/renode/tests/robot.css \
-            --variable PWD_PATH:"$PWD" \
             --runner=none \
             -r test-results $@
         '';

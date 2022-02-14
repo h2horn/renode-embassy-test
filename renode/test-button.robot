@@ -5,7 +5,7 @@ Test Setup                    Reset Emulation
 Resource                      ${RENODEKEYWORDS}
 
 *** Test Cases ***
-Test Uart Led Toggle
+Test Button Led Toggle
     Execute Command         mach create
     Execute Command         machine LoadPlatformDescription @${CURDIR}/nrf52840-dongle.repl
     Execute Command         sysbus LoadELF @${CURDIR}/../firmware/target/thumbv7em-none-eabi/debug/frenode
@@ -17,11 +17,9 @@ Test Uart Led Toggle
 
     Wait For Line On Uart   Hello World!
     Execute Command         lt AssertState False 0
-    Write Char On Uart      1
-    Write Char On Uart      \n
-    Test If Uart Is Idle    1
+    Execute Command         sysbus.gpioPortA.UserButton Press
+    Test If Uart Is Idle    3
     Execute Command         lt AssertState True 0
-    Write Char On Uart      0
-    Write Char On Uart      \n
-    Test If Uart Is Idle    1
+    Execute Command         sysbus.gpioPortA.UserButton Release
+    Test If Uart Is Idle    3
     Execute Command         lt AssertState False 0
